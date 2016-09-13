@@ -1,0 +1,89 @@
+---
+  - name: Install lirc package
+    sudo: yes
+    apt:
+      name: lirc
+      state: present
+      force: yes
+
+
+  - name: Edit /etc/modules to add support for lirc
+    sudo: yes
+    lineinfile:
+      dest: /etc/modules
+      line: "{{ item }}"
+    with_items:
+      - lirc_dev
+      - lirc_rpi gpio_in_pin={{ gpio_in_pin }} gpio_out_pin={{ gpio_out_pin }}
+    register: edit_modules
+  
+  - name: Edit /boot/config.txt
+    sudo: yes
+    lineinfile:
+      dest: /boot/config.txt
+      regexp: "^dtoverlay=" 
+      line: "dtoverlay=lirc-rpi,gpio_in_pin={{ gpio_in_pin }},gpio_out_pin={{ gpio_out_pin }},gpio_in_pull=up"
+    register: edit_boot_config
+
+  - name: Edit /etc/lirc/hardware.conf 
+    sudo: yes
+    lineinfile:
+      dest: /etc/lirc/hardware.conf
+      regexp: "{{ item.regexp }}" 
+      line: "{{ item.line }}"
+    with_items:
+      - { regexp: "^LIRCD_ARGS=", line: "LIRCD_ARGS=\"--uinput\"" }
+      - { regexp: "^LOAD_MODULES=", line: "LOAD_MODULES=true" }
+      - { regexp: "^DRIVER=", line: "DRIVER=\"default\""  }
+      - { regexp: "^DEVICE=", line: "DEVICE=\"/dev/lirc0\"" }
+      - { regexp: "^MODULES=", line: "MODULES=\"lirc_rpi\"" }
+    register: edit_lirc_hardware_config
+
+
+  - name: Reboot target
+    sudo: yes
+    shell: reboot
+    async: 0
+    poll: 0
+    ignore_errors: true 
+    when: (edit_modules.changed or edit_boot_config.changed)
+    register: reboot
+
+
+  - name: Wait for server come back
+    wait_for: >
+      host="{{ ansible_host }}"
+      port=22
+      delay=15
+      timeout=60
+    delegate_to: localhost
+    when: (edit_modules.changed or edit_boot_config.changed)
+
+
+  - name: Check lirc daemon
+    sudo: yes
+    shell: systemctl status lirc
+    register: result
+    until: result.stdout.find("active (running)") != -1
+    retries: 60
+    delay: 2
+    when: (edit_modules.changed or edit_boot_config.changed)
+
+
+  - name: Download lircd.conf
+    sudo: yes
+    copy:
+      src: etc/lirc/lircd.conf
+      dest: /etc/lirc/lircd.conf
+    register: copy_lircd_config
+
+
+  - name: Restart lirc daemon
+    sudo: yes
+    shell: systemctl restart lirc
+    when: (copy_lircd_config.changed or edit_lirc_hardware_config.changed)
+
+
+
+
+
